@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-stress-test"
+version = "0.1.0"
+description = "LLM 推理服务压力测试工具"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "aiohttp>=3.9",
+    "matplotlib>=3.8",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+evalscope = ["evalscope"]
+gui = []
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "aioresponses>=0.7",
+]
+
+[project.scripts]
+llm-stress-test = "llm_stress_test.cli:main"
+llm-stress-config-gui = "llm_stress_test.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

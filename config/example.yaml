@@ -1,0 +1,42 @@
+# LLM 压力测试配置示例
+
+target:
+  name: "DeepSeek-V3.2-Exp"
+  api_url: "https://llmapi.paratera.com/v1/chat/completions"
+  api_key: "${LLM_API_KEY}"
+  model: "DeepSeek-V3.2-Exp"
+
+engine: "evalscope"
+
+request:
+  stream: true
+  extra_args:
+    chat_template_kwargs:
+      thinking: true
+
+test:
+  concurrency: [1, 5, 10, 20, 50]
+  requests_per_level: [10, 50, 100, 200, 500]
+  dataset: "longalpaca"
+
+pass_criteria:
+  - metric: "success_rate"
+    operator: ">="
+    threshold: 1.0
+  - metric: "gen_toks_per_sec"
+    operator: ">="
+    threshold: 500
+  - metric: "avg_ttft"
+    operator: "<="
+    threshold: 10.0
+
+degradation:
+  enabled: true
+  start_concurrency: 50
+  step: 10
+  min_concurrency: 10
+
+output:
+  dir: "./results"
+  formats: ["json", "csv", "html"]
+  charts: true
