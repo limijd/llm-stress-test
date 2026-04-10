@@ -1,21 +1,29 @@
+import subprocess
+import sys
 import pytest
-import yaml
-from click.testing import CliRunner
+from pathlib import Path
+from llm_stress_test import _yaml as yaml
 from llm_stress_test.cli import main
 
-@pytest.fixture
-def runner():
-    return CliRunner()
+
+def _run_cli(*args: str) -> subprocess.CompletedProcess:
+    """通过 subprocess 调用 CLI，避免依赖 click.testing.CliRunner。"""
+    return subprocess.run(
+        [sys.executable, "-m", "llm_stress_test", *args],
+        capture_output=True, text=True,
+        env={**__import__("os").environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")},
+    )
+
 
 class TestCLI:
-    def test_help(self, runner):
-        result = runner.invoke(main, ["--help"])
-        assert result.exit_code == 0
-        assert "run" in result.output
-        assert "validate" in result.output
-        assert "report" in result.output
+    def test_help(self):
+        result = _run_cli("--help")
+        assert result.returncode == 0
+        assert "run" in result.stdout
+        assert "validate" in result.stdout
+        assert "report" in result.stdout
 
-    def test_validate_valid_config(self, runner, tmp_path):
+    def test_validate_valid_config(self, tmp_path):
         config = {
             "target": {"name": "test", "api_url": "http://localhost/v1/chat/completions", "api_key": "sk-test", "model": "test"},
             "engine": "native",
@@ -25,16 +33,16 @@ class TestCLI:
             "output": {"dir": "./results", "formats": ["json"], "charts": False},
         }
         config_path = tmp_path / "test.yaml"
-        config_path.write_text(yaml.dump(config))
-        result = runner.invoke(main, ["validate", "--config", str(config_path)])
-        assert result.exit_code == 0
+        config_path.write_text(yaml.dump(config, sort_keys=False))
+        result = _run_cli("validate", "--config", str(config_path))
+        assert result.returncode == 0
 
-    def test_validate_invalid_config(self, runner, tmp_path):
+    def test_validate_invalid_config(self, tmp_path):
         config_path = tmp_path / "bad.yaml"
         config_path.write_text("target: {}")
-        result = runner.invoke(main, ["validate", "--config", str(config_path)])
-        assert result.exit_code != 0
+        result = _run_cli("validate", "--config", str(config_path))
+        assert result.returncode != 0
 
-    def test_run_missing_config(self, runner):
-        result = runner.invoke(main, ["run"])
-        assert result.exit_code != 0
+    def test_run_missing_config(self):
+        result = _run_cli("run")
+        assert result.returncode != 0

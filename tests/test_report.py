@@ -3,7 +3,6 @@ import json
 import pytest
 from pathlib import Path
 from llm_stress_test.report.exporter import export_json, export_csv, create_result_dir
-from llm_stress_test.report.chart import generate_charts
 from llm_stress_test.report.html import generate_html_report
 from llm_stress_test.models import (
     RequestMetric, LevelResult, AggregatedMetrics, CriterionResult, PassResult,
@@ -57,6 +56,10 @@ class TestExportCSV:
 
 class TestGenerateCharts:
     def test_creates_chart_files(self, tmp_path):
+        try:
+            from llm_stress_test.report.chart import generate_charts
+        except ImportError:
+            pytest.skip("matplotlib 未安装，跳过图表测试")
         reports = [_make_level_report(1), _make_level_report(5), _make_level_report(10)]
         result_dir = str(tmp_path / "test_results")
         Path(result_dir).mkdir()

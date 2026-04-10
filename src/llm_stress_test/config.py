@@ -4,7 +4,7 @@ import copy
 import os
 import re
 from pathlib import Path
-import yaml
+from . import _yaml as yaml
 
 class ConfigError(Exception):
     """配置错误"""
@@ -26,9 +26,9 @@ def load_config(path: str) -> dict:
     if not p.exists():
         raise ConfigError(f"配置文件不存在: {path}")
     try:
-        with p.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
+        text = p.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+    except (yaml.YAMLError, Exception) as e:
         raise ConfigError(f"YAML 语法错误: {e}") from e
     if not isinstance(data, dict):
         raise ConfigError("配置文件顶层必须是字典")

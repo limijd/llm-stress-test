@@ -8,8 +8,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs
 
-import yaml
-
+from .. import _yaml as yaml
 from ..config import validate_config, ConfigError
 
 _HOST = "127.0.0.1"

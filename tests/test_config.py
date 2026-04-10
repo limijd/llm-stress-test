@@ -1,8 +1,7 @@
 import os
 import pytest
-import tempfile
-import yaml
 from pathlib import Path
+from llm_stress_test import _yaml as yaml
 from llm_stress_test.config import (
     load_config, validate_config, merge_cli_overrides,
     expand_env_vars, sanitize_for_export, ConfigError,
@@ -33,7 +32,7 @@ MINIMAL_CONFIG = {
 }
 
 def write_yaml(data: dict, path: Path):
-    path.write_text(yaml.dump(data, allow_unicode=True))
+    path.write_text(yaml.dump(data, allow_unicode=True, sort_keys=False))
 
 class TestLoadConfig:
     def test_load_valid_yaml(self, tmp_path):
@@ -48,8 +47,9 @@ class TestLoadConfig:
 
     def test_load_invalid_yaml(self, tmp_path):
         p = tmp_path / "bad.yaml"
-        p.write_text(": : : invalid")
-        with pytest.raises(ConfigError, match="YAML 语法错误"):
+        # 顶层为列表而非字典，应报错
+        p.write_text("- not a dict")
+        with pytest.raises(ConfigError, match="顶层必须是字典"):
             load_config(str(p))
 
 class TestValidateConfig:
