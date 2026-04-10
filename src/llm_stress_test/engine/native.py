@@ -11,15 +11,6 @@ import aiohttp
 from ..models import EngineConfig, LevelResult, RequestMetric
 from .base import BaseEngine
 
-# 兜底 prompt 列表，Task 10 完成后由 dataset 模块替换
-_FALLBACK_PROMPTS: list[str] = [
-    "What is the capital of France?",
-    "Explain the theory of relativity in simple terms.",
-    "Write a short poem about the ocean.",
-    "What are the main differences between Python and JavaScript?",
-    "How does photosynthesis work?",
-]
-
 
 class NativeEngine(BaseEngine):
     """直接调用 OpenAI 兼容 API 的原生压测引擎。"""
@@ -54,7 +45,7 @@ class NativeEngine(BaseEngine):
 
     async def _run_async(self, config: EngineConfig) -> LevelResult:
         """加载 prompt，并发派发所有请求，收集指标。"""
-        prompts = self._load_prompts(config.num_requests)
+        prompts = self._load_prompts(config.dataset, config.num_requests)
         sem = asyncio.Semaphore(config.concurrency)
 
         start = time.monotonic()
@@ -78,7 +69,7 @@ class NativeEngine(BaseEngine):
         sem: asyncio.Semaphore,
         session: aiohttp.ClientSession,
         config: EngineConfig,
-        prompt: str,
+        prompt: dict,
     ) -> RequestMetric:
         """在信号量约束下发送单条请求。"""
         async with sem:
@@ -88,7 +79,7 @@ class NativeEngine(BaseEngine):
         self,
         session: aiohttp.ClientSession,
         config: EngineConfig,
-        prompt: str,
+        prompt: dict,
     ) -> RequestMetric:
         """构造请求并委托给流式 / 非流式处理器。"""
         headers = {
@@ -97,7 +88,7 @@ class NativeEngine(BaseEngine):
         }
         body: dict[str, Any] = {
             "model": config.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [prompt],
             "stream": config.stream,
             **config.extra_args,
         }
@@ -196,10 +187,6 @@ class NativeEngine(BaseEngine):
             error=None,
         )
 
-    def _load_prompts(self, n: int) -> list[str]:
-        """加载 prompt 列表。Task 10 完成后接入 dataset 模块。"""
-        # 确保至少返回 n 条（循环复用）
-        result = []
-        for i in range(n):
-            result.append(_FALLBACK_PROMPTS[i % len(_FALLBACK_PROMPTS)])
-        return result
+    def _load_prompts(self, dataset: str, num_requests: int) -> list[dict]:
+        from ..dataset import load_dataset
+        return load_dataset(dataset)
