@@ -3,6 +3,8 @@ import json
 import pytest
 from pathlib import Path
 from llm_stress_test.report.exporter import export_json, export_csv, create_result_dir
+from llm_stress_test.report.chart import generate_charts
+from llm_stress_test.report.html import generate_html_report
 from llm_stress_test.models import (
     RequestMetric, LevelResult, AggregatedMetrics, CriterionResult, PassResult,
 )
@@ -52,3 +54,31 @@ class TestExportCSV:
             rows = list(reader)
         assert len(rows) == 2
         assert rows[0]["concurrency"] == "1"
+
+class TestGenerateCharts:
+    def test_creates_chart_files(self, tmp_path):
+        reports = [_make_level_report(1), _make_level_report(5), _make_level_report(10)]
+        result_dir = str(tmp_path / "test_results")
+        Path(result_dir).mkdir()
+        (Path(result_dir) / "charts").mkdir()
+        generate_charts(reports, result_dir)
+        charts_dir = Path(result_dir) / "charts"
+        assert (charts_dir / "throughput.png").exists()
+        assert (charts_dir / "ttft.png").exists()
+        assert (charts_dir / "latency_p50_p99.png").exists()
+        assert (charts_dir / "success_rate.png").exists()
+
+class TestGenerateHTMLReport:
+    def test_creates_html_file(self, tmp_path):
+        reports = [_make_level_report(1), _make_level_report(5)]
+        result_dir = str(tmp_path / "test_results")
+        Path(result_dir).mkdir()
+        (Path(result_dir) / "charts").mkdir()
+        config_snapshot = {"target": {"name": "test", "api_key": "***REDACTED***"}}
+        generate_html_report(reports=reports, result_dir=result_dir, config_snapshot=config_snapshot,
+                             target_passed=True, max_passing_concurrency=5)
+        html_file = Path(result_dir) / "report.html"
+        assert html_file.exists()
+        content = html_file.read_text()
+        assert "test" in content
+        assert "REDACTED" in content
