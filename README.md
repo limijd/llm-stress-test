@@ -2,8 +2,6 @@
 
 LLM 推理服务压力测试工具。支持 OpenAI 兼容 API，双压测内核（evalscope + 自研），自动多并发梯度测试、通过判定、降级探测，一键生成图表和 HTML 报告。
 
-![配置编辑器](docs/images/config-gui.png)
-
 ## 功能特性
 
 - **双引擎**：evalscope（行业标准）和自研 asyncio 引擎，按需切换
@@ -384,6 +382,10 @@ src/llm_stress_test/
 └── gui/
     └── app.py          # 本地 Web UI 配置编辑器
 ```
+
+## 配置编辑器
+
+![配置编辑器](docs/images/config-gui.png)
 
 ## License
 
