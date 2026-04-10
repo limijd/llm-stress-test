@@ -1,0 +1,35 @@
+# 本地 MLX Server — Qwen3.5-27B 压力测试
+target:
+  name: "Qwen3.5-27B-4bit-local"
+  api_url: "http://localhost:8080/v1/chat/completions"
+  api_key: "not-needed"
+  model: "mlx-community/Qwen3.5-27B-4bit"
+
+engine: "native"
+
+request:
+  stream: true
+  extra_args: {}
+
+test:
+  concurrency: [1, 2, 4]
+  requests_per_level: [5, 10, 20]
+  dataset: "openqa"
+
+pass_criteria:
+  - metric: "success_rate"
+    operator: ">="
+    threshold: 1.0
+  - metric: "avg_ttft"
+    operator: "<="
+    threshold: 10.0
+
+degradation:
+  enabled: true
+  step: 1
+  min_concurrency: 1
+
+output:
+  dir: "./results"
+  formats: ["json", "csv", "html"]
+  charts: true

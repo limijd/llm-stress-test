@@ -136,9 +136,53 @@ def run(
         extra_args=request_cfg.get("extra_args", {}),
     )
 
-    # ---- 5. 执行测试 ----
+    # ---- 5. 执行测试（带实时进度输出） ----
+    import time as _time
+    _level_start_time = [0.0]
+
+    def _on_progress(completed: int, total: int, concurrency: int, req_metric) -> None:
+        elapsed = _time.monotonic() - _level_start_time[0]
+        status = "ok" if req_metric.success else "FAIL"
+        toks = req_metric.output_tokens
+        click.echo(
+            f"\r  [{completed}/{total}] "
+            f"elapsed={elapsed:.1f}s  "
+            f"last: {status} {toks}toks {req_metric.total_latency:.1f}s",
+            nl=False,
+        )
+
+    def _on_level_start(c, n, idx, total, is_degradation):
+        _level_start_time[0] = _time.monotonic()
+        if is_degradation:
+            click.echo(f"\n[降级] 并发={c}, 请求数={n}")
+        else:
+            click.echo(f"\n[{idx}/{total}] 并发={c}, 请求数={n}")
+
+    def _on_level_done(report, idx, total):
+        agg = report.aggregated
+        passed = report.pass_result.passed
+        badge = click.style("PASS", fg="green") if passed else click.style("FAIL", fg="red")
+        click.echo(
+            f"\n  => Success Rate: {agg.success_rate * 100:.1f}%"
+            f"  Gen toks/s: {agg.gen_toks_per_sec:.1f}"
+            f"  Avg TTFT: {agg.avg_ttft:.1f}s"
+            f"  [{badge}]"
+        )
+        if not passed:
+            for d in report.pass_result.details:
+                if not d.passed:
+                    click.echo(f"     {d.metric}: {d.actual:.3f} {d.operator} {d.threshold}")
+
+    # 设置回调
+    if hasattr(engine, 'on_progress'):
+        engine.on_progress = _on_progress
+
     degradation = cfg.get("degradation", {})
     orchestrator = Orchestrator(engine=engine, criteria=criteria)
+    orchestrator.on_level_start = _on_level_start
+    orchestrator.on_level_done = _on_level_done
+
+    click.echo(click.style(f"\n[Engine: {engine_name}] {reason}", bold=True))
     try:
         result = orchestrator.run_test(
             concurrency=test_cfg["concurrency"],
@@ -152,22 +196,8 @@ def run(
         click.echo(click.style(f"系统性中止：{exc}", fg="red"), err=True)
         sys.exit(2)
 
-    # ---- 6. 终端输出摘要 ----
-    click.echo("")
-    for idx, report in enumerate(result.level_reports, start=1):
-        agg = report.aggregated
-        passed = report.pass_result.passed
-        badge = click.style("✓ PASS", fg="green") if passed else click.style("✗ FAIL", fg="red")
-        line = (
-            f"[{idx}] 并发={report.concurrency}"
-            f"  Success Rate: {agg.success_rate * 100:.1f}%"
-            f"  Gen toks/s: {agg.gen_toks_per_sec:.1f}"
-            f"  Avg TTFT: {agg.avg_ttft:.1f}s"
-            f"  {badge}"
-        )
-        click.echo(line)
-
-    click.echo("")
+    # ---- 6. 终端输出结论 ----
+    click.echo("\n" + "=" * 60)
     if result.target_passed:
         click.echo(click.style(f"结论: 最大通过并发数 = {result.max_passing_concurrency}", fg="green"))
     elif result.aborted:

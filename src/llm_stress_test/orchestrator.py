@@ -47,6 +47,10 @@ class Orchestrator:
     def __init__(self, engine: BaseEngine, criteria: list[Criterion]) -> None:
         self._engine = engine
         self._criteria = criteria
+        # 回调：on_level_start(concurrency, num_requests, level_index, total_levels, is_degradation)
+        self.on_level_start: callable | None = None
+        # 回调：on_level_done(report, level_index, total_levels)
+        self.on_level_done: callable | None = None
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -74,12 +78,17 @@ class Orchestrator:
         tested_cache: dict[int, LevelReport] = {}
 
         # Phase 1 —— 依次执行所有档位
+        total_levels = len(concurrency)
         try:
-            for c, n in zip(concurrency, requests_per_level):
+            for idx, (c, n) in enumerate(zip(concurrency, requests_per_level)):
+                if self.on_level_start:
+                    self.on_level_start(c, n, idx + 1, total_levels, False)
                 report = self._run_level(config_template, c, n)
                 tested_cache[c] = report
                 level_reports.append(report)
                 level_results.append(report.level_result)
+                if self.on_level_done:
+                    self.on_level_done(report, idx + 1, total_levels)
         except SystemicAbort as exc:
             return TestRunResult(
                 level_reports=level_reports,
@@ -124,10 +133,14 @@ class Orchestrator:
                     report = tested_cache[probe]
                 else:
                     probe_requests = max(1, round(base_ratio * probe))
+                    if self.on_level_start:
+                        self.on_level_start(probe, probe_requests, 0, 0, True)
                     report = self._run_level(config_template, probe, probe_requests)
                     tested_cache[probe] = report
                     level_reports.append(report)
                     level_results.append(report.level_result)
+                    if self.on_level_done:
+                        self.on_level_done(report, 0, 0)
 
                 if report.pass_result.passed:
                     max_passing = probe

@@ -15,6 +15,10 @@ from .base import BaseEngine
 class NativeEngine(BaseEngine):
     """直接调用 OpenAI 兼容 API 的原生压测引擎。"""
 
+    def __init__(self) -> None:
+        # 进度回调：on_progress(completed, total, concurrency)
+        self.on_progress: callable | None = None
+
     def check_available(self) -> tuple[bool, str]:
         """检查 aiohttp 是否可用。"""
         try:
@@ -47,13 +51,19 @@ class NativeEngine(BaseEngine):
         """加载 prompt，并发派发所有请求，收集指标。"""
         prompts = self._load_prompts(config.dataset, config.num_requests)
         sem = asyncio.Semaphore(config.concurrency)
+        completed = 0
+
+        async def _tracked_send(i: int) -> RequestMetric:
+            nonlocal completed
+            result = await self._bounded_send(sem, session, config, prompts[i % len(prompts)])
+            completed += 1
+            if self.on_progress:
+                self.on_progress(completed, config.num_requests, config.concurrency, result)
+            return result
 
         start = time.monotonic()
         async with aiohttp.ClientSession() as session:
-            tasks = [
-                self._bounded_send(sem, session, config, prompts[i % len(prompts)])
-                for i in range(config.num_requests)
-            ]
+            tasks = [_tracked_send(i) for i in range(config.num_requests)]
             metrics: list[RequestMetric] = await asyncio.gather(*tasks)
         duration = time.monotonic() - start
 
