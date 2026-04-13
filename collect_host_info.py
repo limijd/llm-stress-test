@@ -5,9 +5,12 @@ LLM 主机信息采集脚本
 零依赖，只用 Python 标准库。目标环境：Ubuntu 24.04 + NVIDIA GPU
 
 用法:
-    python3 collect_host_info.py                    # 输出到终端
-    python3 collect_host_info.py -o host_info.json  # 同时保存 JSON
-    python3 collect_host_info.py --json-only         # 只输出 JSON 到 stdout
+    python3 collect_host_info.py                          # 输出到终端
+    python3 collect_host_info.py -o host_info.json        # 保存 JSON
+    python3 collect_host_info.py --md host_info.md        # 保存 Markdown 报告
+    python3 collect_host_info.py --md-only                # 只输出 Markdown 到 stdout
+    python3 collect_host_info.py --json-only              # 只输出 JSON 到 stdout
+    python3 collect_host_info.py -o info.json --md info.md  # 同时保存 JSON 和 Markdown
 """
 
 from __future__ import annotations
@@ -546,6 +549,355 @@ def print_report(report: dict):
     print(f"{'═' * 60}")
 
 
+# ── Markdown 渲染 ──────────────────────────────────────
+
+def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+    """生成 Markdown 表格"""
+    lines = []
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(str(c) for c in row) + " |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _md_code_block(text: str, lang: str = "") -> str:
+    """生成 Markdown 代码块"""
+    if not text or text.startswith("("):
+        return f"_{text or 'N/A'}_\n"
+    return f"```{lang}\n{text}\n```\n"
+
+
+def render_markdown(report: dict) -> str:
+    """将主机信息渲染为 Markdown"""
+    lines: list[str] = []
+
+    def h1(t: str): lines.append(f"# {t}\n")
+    def h2(t: str): lines.append(f"## {t}\n")
+    def h3(t: str): lines.append(f"### {t}\n")
+    def p(t: str): lines.append(f"{t}\n")
+
+    hostname = report.get("system", {}).get("hostname", "Unknown")
+    h1(f"LLM 主机信息采集报告 — {hostname}")
+
+    p(f"采集时间 (UTC): `{report.get('collected_at', '')[:19]}`")
+    p(f"采集器版本: {report.get('collector_version', '')}\n")
+
+    # ── 1. 系统概况 ──
+
+    h2("1. 系统概况")
+    sys_info = report.get("system", {})
+    lines.append(_md_table(
+        ["项目", "值"],
+        [
+            ["主机名", f"`{sys_info.get('hostname', '')}`"],
+            ["操作系统", sys_info.get("os_pretty", "")],
+            ["OS 版本", sys_info.get("os_version", "")],
+            ["内核", f"`{sys_info.get('kernel', '')}`"],
+            ["架构", sys_info.get("arch", "")],
+            ["运行时间", sys_info.get("uptime", "")],
+            ["启动时间", sys_info.get("uptime_since", "")],
+            ["时区", sys_info.get("timezone", "")],
+        ],
+    ))
+
+    # ── 2. CPU ──
+
+    h2("2. CPU 信息")
+    cpu = report.get("cpu", {})
+    if cpu:
+        lines.append(_md_table(
+            ["项目", "值"],
+            [
+                ["型号", cpu.get("model", "")],
+                ["架构", cpu.get("architecture", "")],
+                ["Sockets", str(cpu.get("sockets", ""))],
+                ["物理核心", str(cpu.get("total_cores", ""))],
+                ["逻辑线程", str(cpu.get("total_threads", ""))],
+                ["每核线程", str(cpu.get("threads_per_core", ""))],
+                ["最大频率 (MHz)", cpu.get("max_mhz", "")],
+                ["最小频率 (MHz)", cpu.get("min_mhz", "")],
+                ["L1d Cache", cpu.get("l1d_cache", "")],
+                ["L1i Cache", cpu.get("l1i_cache", "")],
+                ["L2 Cache", cpu.get("l2_cache", "")],
+                ["L3 Cache", cpu.get("l3_cache", "")],
+                ["NUMA Nodes", str(cpu.get("numa_nodes", ""))],
+                ["Governor", cpu.get("governor", "")],
+                ["虚拟化", cpu.get("virtualization", "")],
+            ],
+        ))
+        freq = cpu.get("current_freq_mhz")
+        if freq:
+            p(f"当前频率: min={freq['min']} MHz, max={freq['max']} MHz, avg={freq['avg']} MHz")
+
+        numa_topo = cpu.get("numa_topology", "")
+        if numa_topo:
+            h3("2.1 NUMA 拓扑")
+            lines.append(_md_code_block(numa_topo))
+
+    # ── 3. 内存 ──
+
+    h2("3. 内存信息")
+    mem = report.get("memory", {})
+    if mem:
+        lines.append(_md_table(
+            ["项目", "值"],
+            [
+                ["总内存", mem.get("total", "")],
+                ["可用内存", mem.get("available", "")],
+                ["使用率", f"{mem.get('used_pct', '')}%"],
+                ["Swap 总量", mem.get("swap_total", "")],
+                ["Swap 已用", mem.get("swap_used", "")],
+                ["HugePages 总数", str(mem.get("hugepages_total", ""))],
+                ["HugePages 空闲", str(mem.get("hugepages_free", ""))],
+                ["HugePage 大小", mem.get("hugepage_size", "")],
+            ],
+        ))
+        dimm = mem.get("dimm_info", "")
+        if dimm and not dimm.startswith("("):
+            h3("3.1 DIMM 硬件")
+            lines.append(_md_code_block(dimm))
+
+    # ── 4. GPU ──
+
+    h2("4. GPU 信息 (NVIDIA)")
+    gpu = report.get("gpu", {})
+    if not gpu.get("available"):
+        p(f"_{gpu.get('error', 'NVIDIA GPU 不可用')}_")
+    else:
+        lines.append(_md_table(
+            ["项目", "值"],
+            [
+                ["GPU 数量", str(gpu.get("count", ""))],
+                ["驱动版本", gpu.get("driver_version", "")],
+                ["CUDA 版本", gpu.get("cuda_version", "")],
+                ["NVCC 版本", gpu.get("nvcc_version", "") or "N/A"],
+                ["CUDA_VISIBLE_DEVICES", f"`{gpu.get('cuda_visible_devices', '')}`"],
+            ],
+        ))
+
+        gpus = gpu.get("gpus", [])
+        if gpus:
+            h3("4.1 逐 GPU 详情")
+            rows = []
+            for g in gpus:
+                rows.append([
+                    g.get("index", ""),
+                    g.get("name", ""),
+                    f"{g.get('memory_total_mib', '')} MiB",
+                    f"{g.get('memory_used_mib', '')} MiB",
+                    f"{g.get('temperature_c', '')} C",
+                    f"{g.get('power_draw_w', '')} / {g.get('power_limit_w', '')} W",
+                    f"{g.get('clock_graphics_mhz', '')} MHz",
+                    f"{g.get('utilization_gpu_pct', '')}%",
+                    g.get("pstate", ""),
+                    g.get("compute_mode", ""),
+                ])
+            lines.append(_md_table(
+                ["#", "名称", "显存总量", "显存已用", "温度", "功耗/限制", "GPU 时钟", "利用率", "PState", "Compute Mode"],
+                rows,
+            ))
+
+        # 持久化模式
+        persist = gpu.get("persistence_mode", [])
+        if persist:
+            p(f"Persistence Mode: `{'  '.join(persist)}`")
+
+        # NVLink / 拓扑
+        topo = gpu.get("topology_matrix", "")
+        if topo:
+            h3("4.2 GPU 拓扑矩阵 (NVLink/PCIe)")
+            lines.append(_md_code_block(topo))
+
+        nvlink = gpu.get("nvlink_status", "")
+        if nvlink:
+            h3("4.3 NVLink 状态")
+            lines.append(_md_code_block(nvlink))
+
+        # nvidia-smi 全量
+        smi_full = gpu.get("nvidia_smi_full", "")
+        if smi_full:
+            h3("4.4 nvidia-smi 完整输出")
+            lines.append(_md_code_block(smi_full))
+
+    # ── 5. PCIe ──
+
+    h2("5. PCIe 拓扑")
+    pcie = report.get("pcie", {})
+    if pcie:
+        gpu_links = pcie.get("gpu_pcie_links", "")
+        if gpu_links:
+            h3("5.1 GPU PCIe 链路")
+            lines.append(_md_code_block(gpu_links))
+
+        pcie_tree = pcie.get("pcie_tree", "")
+        if pcie_tree:
+            h3("5.2 PCIe 设备树")
+            lines.append(_md_code_block(pcie_tree))
+
+        iommu = pcie.get("iommu", "")
+        if iommu:
+            p(f"IOMMU: `{iommu}`")
+
+    # ── 6. 存储 ──
+
+    h2("6. 存储信息")
+    storage = report.get("storage", {})
+    if storage:
+        blk = storage.get("block_devices", "")
+        if blk:
+            h3("6.1 块设备")
+            lines.append(_md_code_block(blk))
+
+        fs = storage.get("filesystem_usage", "")
+        if fs:
+            h3("6.2 文件系统使用")
+            lines.append(_md_code_block(fs))
+
+        nvme = storage.get("nvme_devices", "")
+        if nvme:
+            h3("6.3 NVMe 设备")
+            lines.append(_md_code_block(nvme))
+
+        sched = storage.get("io_schedulers", "")
+        if sched:
+            p(f"I/O 调度器: `{sched}`")
+
+        model_files = storage.get("model_files", "")
+        if model_files and not model_files.startswith("("):
+            h3("6.4 模型文件")
+            lines.append(_md_code_block(model_files))
+
+    # ── 7. 网络 ──
+
+    h2("7. 网络信息")
+    net = report.get("network", {})
+    if net:
+        ifaces = net.get("interfaces", "")
+        if ifaces:
+            h3("7.1 网络接口")
+            lines.append(_md_code_block(ifaces))
+
+        speeds = net.get("link_speeds", "")
+        if speeds:
+            h3("7.2 链路速率")
+            lines.append(_md_code_block(speeds))
+
+        ports = net.get("listening_ports", "")
+        if ports:
+            h3("7.3 LLM 相关监听端口")
+            lines.append(_md_code_block(ports))
+
+    # ── 8. 内核调优 ──
+
+    h2("8. 内核调优参数")
+    kt = report.get("kernel_tuning", {})
+    if kt:
+        sysctl = kt.get("sysctl", {})
+        if sysctl:
+            rows = [[f"`{k}`", str(v)] for k, v in sysctl.items() if v]
+            if rows:
+                lines.append(_md_table(["参数", "值"], rows))
+
+        thp = kt.get("transparent_hugepages", "")
+        if thp:
+            p(f"Transparent HugePages: `{thp}`")
+
+        gov = kt.get("cpu_governor", "")
+        if gov:
+            p(f"CPU Governor: `{gov}`")
+
+        power = kt.get("power_profile", "")
+        if power:
+            p(f"Power Profile: `{power}`")
+
+        cg_mem = kt.get("cgroup_memory_limit", "")
+        cg_cpu = kt.get("cgroup_cpu_limit", "")
+        if cg_mem or cg_cpu:
+            p(f"cgroup Memory: `{cg_mem}` | cgroup CPU: `{cg_cpu}`")
+
+    # ── 9. LLM 服务检测 ──
+
+    h2("9. LLM 服务检测")
+    llm = report.get("llm_server", {})
+    if llm:
+        ver = llm.get("llama_server_version", "")
+        if ver:
+            p(f"llama-server 版本: `{ver}`")
+
+        cmdline = llm.get("llama_server_cmdline", "")
+        if cmdline:
+            h3("9.1 启动命令")
+            lines.append(_md_code_block(cmdline, "bash"))
+
+        params = llm.get("parsed_params", {})
+        if params:
+            h3("9.2 解析后参数")
+            rows = [[f"`{k}`", str(v)] for k, v in params.items()]
+            lines.append(_md_table(["参数", "值"], rows))
+
+        model_file = llm.get("model_file_info", "")
+        if model_file:
+            p(f"模型文件: `{model_file}`")
+
+        procs = llm.get("llm_processes", "")
+        if procs:
+            h3("9.3 LLM 进程")
+            lines.append(_md_code_block(procs))
+
+        # 健康检查结果
+        for port in [8080, 8000]:
+            hkey = f"health_port_{port}"
+            if hkey in llm:
+                p(f"Health (port {port}): `{llm[hkey]}`")
+
+    # ── 10. 容器 / 虚拟化 ──
+
+    h2("10. 容器 / 虚拟化")
+    ctr = report.get("container", {})
+    if ctr:
+        lines.append(_md_table(
+            ["项目", "值"],
+            [
+                ["Docker 容器内", str(ctr.get("in_docker", False))],
+                ["容器环境", str(ctr.get("in_container", False))],
+                ["虚拟化检测", ctr.get("systemd_detect_virt", "none")],
+                ["Docker 版本", ctr.get("docker_version", "") or "N/A"],
+                ["NVIDIA Container Runtime", ctr.get("nvidia_container_runtime", "") or "N/A"],
+            ],
+        ))
+
+    # ── 11. 软件版本 ──
+
+    h2("11. 软件版本")
+    sw = report.get("software", {})
+    if sw:
+        rows = []
+        labels = {
+            "python": "Python",
+            "gcc": "GCC",
+            "cmake": "CMake",
+            "cuda_toolkit": "CUDA Toolkit",
+            "cudnn": "cuDNN",
+            "nccl": "NCCL",
+        }
+        for k, label in labels.items():
+            v = sw.get(k, "")
+            if v:
+                rows.append([label, f"`{v}`"])
+            else:
+                rows.append([label, "N/A"])
+        lines.append(_md_table(["软件", "版本"], rows))
+
+    # ── 尾部 ──
+
+    lines.append("---\n")
+    p(f"_生成工具: collect_host_info.py v{report.get('collector_version', '?')}_")
+
+    return "\n".join(lines)
+
+
 # ── 主流程 ──────────────────────────────────────────
 
 def collect_all() -> dict:
@@ -581,20 +933,30 @@ def collect_all() -> dict:
 def main():
     parser = argparse.ArgumentParser(description="LLM 主机信息采集")
     parser.add_argument("-o", "--output", help="保存 JSON 到指定文件")
+    parser.add_argument("--md", "--markdown", dest="markdown", help="保存 Markdown 报告到指定文件")
     parser.add_argument("--json-only", action="store_true", help="只输出 JSON 到 stdout")
+    parser.add_argument("--md-only", action="store_true", help="只输出 Markdown 到 stdout")
     args = parser.parse_args()
 
     report = collect_all()
+    md_text = render_markdown(report)
 
     if args.json_only:
         print(json.dumps(report, indent=2, ensure_ascii=False))
+    elif args.md_only:
+        print(md_text)
     else:
         print_report(report)
-        if args.output:
-            Path(args.output).write_text(
-                json.dumps(report, indent=2, ensure_ascii=False)
-            )
+
+    if args.output:
+        Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        if not args.json_only and not args.md_only:
             print(f"\nJSON 已保存到: {args.output}")
+
+    if args.markdown:
+        Path(args.markdown).write_text(md_text)
+        if not args.json_only and not args.md_only:
+            print(f"Markdown 已保存到: {args.markdown}")
 
 
 if __name__ == "__main__":
