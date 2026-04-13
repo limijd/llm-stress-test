@@ -50,12 +50,23 @@ Strategy (in order, first success wins):
 1. **`/slots` endpoint**: If llama-server was started with `--slots`, returns JSON array. `S = len(array)`. Done.
 
 2. **Timing-based detection** (if `/slots` unavailable):
-   - Send 1 request, measure baseline latency `T`.
-   - Send 2 concurrent requests, measure wall time `W2`.
-   - If `W2 < T × 1.5` → at least 2 slots. Send 4 concurrent, measure `W4`.
-   - If `W4 < T × 2.5` → at least 4 slots. Send 8 concurrent, measure `W8`.
-   - Stop doubling when `W_n > T × (n/prev_S) × 1.3` (requests clearly queuing).
-   - `S = estimated parallel slots`.
+
+   ```python
+   # 测单请求基线延迟
+   T = measure_single_request_latency()
+   S = 1  # 已知至少 1 个 slot
+
+   for n in [2, 4, 8]:
+       W = measure_concurrent_requests(n, prompt="Say OK", max_tokens=8)
+       # 如果 n 个请求的 wall time 接近 T，说明它们真的在并行
+       # 如果 wall time 接近 T × (n / S)，说明多出来的请求在排队
+       expected_if_parallel = T * 1.5      # 允许 50% 波动
+       expected_if_queuing  = T * (n / S)  # 基于当前已知 S 推算排队时间
+       if W < (expected_if_parallel + expected_if_queuing) / 2:
+           S = n  # 这一轮确实是并行的
+       else:
+           break  # 明显在排队了，停止探测
+   ```
 
 3. **Fallback**: If detection is inconclusive, default `S = 1` (safest).
 
@@ -65,9 +76,10 @@ If `--max-concurrency` is provided, `S = min(detected, max_concurrency)`.
 
 Send a test request with `extra_args: {chat_template_kwargs: {thinking: true}}` and a prompt "Think about what 2+3 equals".
 
-- If response contains `<think>` tag → thinking via `chat_template_kwargs` works.
-- If not, try system prompt approach: `"Enable deep thinking mode. Think step by step."` and check for `<think>`.
-- If neither works → log warning, skip thinking groups (run 4 groups instead of 8).
+- If response contains `<think>` tag → thinking via `chat_template_kwargs` works. Record `thinking_method = "chat_template_kwargs"`.
+- If not → log warning, skip thinking groups (run 4 groups instead of 8).
+
+Note: system prompt 方式（如 "Think step by step"）不可靠——无法区分模型自发输出 `<think>` 和真正进入 thinking mode，因此不采用。
 
 ### 0.4 Check Datasets
 
@@ -129,9 +141,12 @@ All 8 groups use the same concurrency/requests for fair comparison.
 
 For each group, generate a YAML config programmatically (in memory, not written to disk unless `--dry-run`).
 
-Thinking mode config:
-- **native engine**: `extra_args: {chat_template_kwargs: {thinking: true}}` or system prompt, based on Phase 0 detection.
-- **evalscope engine**: `extra_args: {chat_template_kwargs: {thinking: true}}`.
+Thinking mode config (both engines):
+- `extra_args: {chat_template_kwargs: {thinking: true}}`
+
+Engine-specific config:
+- **native engine**: 使用现有 `Orchestrator` + `NativeEngine`，传入 `EngineConfig`，Orchestrator 自动处理多 concurrency level 的逐级执行。
+- **evalscope engine**: 使用现有 `EvalScopeEngine`，内部调用 `evalscope perf --parallel N --number M --dataset D --stream`。evalscope 的 `--parallel` 对应 concurrency，`--number` 对应 requests。每个 concurrency level 独立调用一次 evalscope CLI。结果通过 `EvalScopeEngine._parse_output()` 映射到统一的 `LevelResult` / `AggregatedMetrics` 结构，与 native engine 输出格式一致，确保横向可比。
 
 ### Print Test Plan
 
@@ -218,7 +233,8 @@ results/benchmark-2026-04-13T12-00-00/
 
 ### Safety Mechanisms
 
-- **Per-group timeout**: 10 minutes max. Kill and move to next group.
+- **Per-level timeout**: 每个 concurrency level 独立超时，`timeout = max(300, requests_count × 120)` 秒。thinking + longalpaca 场景单请求可能 30-60s，此公式确保有足够余量。
+- **Per-group timeout**: 所有 level 累计上限 20 分钟，超时杀掉跳下一组。
 - **Cooldown**: 5 seconds between groups for KV cache release.
 - **Orchestrator circuit breaker**: Existing 3× consecutive 5xx and 80% failure rate abort.
 - **Concurrency cap**: Never exceed detected `S` slots.
@@ -276,15 +292,17 @@ results/benchmark-2026-04-13T12-00-00/
 
 ### Thinking vs Non-Thinking
 | Metric | Non-Thinking | Thinking | Delta |
-(averaged across dataset/engine)
+(averaged across dataset/engine, excluding status != completed)
 
 ### OpenQA vs LongAlpaca
 | Metric | OpenQA | LongAlpaca | Delta |
-(averaged across thinking/engine)
+(averaged across thinking/engine, excluding status != completed)
 
 ### Native vs Evalscope
 | Metric | Native | Evalscope | Delta |
-(averaged across thinking/dataset)
+(averaged across thinking/dataset, excluding status != completed)
+
+聚合策略：仅对 `status=completed` 的 group 计算平均值。如果某维度对比的两侧都无 completed group，该维度显示 "N/A — insufficient data"。
 
 ## Per-Group Detail
 (full metrics table for each group)
@@ -331,4 +349,4 @@ pass_criteria:
 | longalpaca download fails | Use openqa for all groups, note in report |
 | Server goes down mid-test | Current group fails, cooldown, try next group |
 | All groups fail | Report shows all failures with error messages |
-| `--parallel 1` detected | All groups run with concurrency=[1], requests=[10] |
+| detected S=1 (single slot) | All groups run with concurrency=[1], requests=[10] |
