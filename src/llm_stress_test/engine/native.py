@@ -102,7 +102,7 @@ class NativeEngine(BaseEngine):
             resp = urllib.request.urlopen(req, context=ctx, timeout=300)
 
             if config.stream:
-                return self._handle_stream(resp, t_start)
+                return self._handle_stream(resp, t_start, config.api_url)
             else:
                 return self._handle_non_stream(resp, t_start)
         except Exception as exc:
@@ -117,10 +117,18 @@ class NativeEngine(BaseEngine):
                 error=str(exc),
             )
 
-    def _handle_stream(self, resp, t_start: float) -> RequestMetric:
-        """逐行解析 SSE，统计 TTFT、token 数。"""
+    def _handle_stream(self, resp, t_start: float, api_url: str) -> RequestMetric:
+        """逐行解析 SSE，统计 TTFT、token 数。
+
+        token 计数策略（优先级从高到低）：
+        1. usage 字段 — 如果最终 chunk 带 usage（OpenAI 标准），直接采用
+        2. /tokenize 端点 — 累积完整 content 后调 llama-server 的 /tokenize 精确计数
+        3. chunk count — 兜底，不可靠（SSE chunk 边界 ≠ token 边界）
+        """
         first_token_time: float | None = None
-        output_tokens = 0
+        accumulated_content = []
+        chunk_count = 0
+        usage_output_tokens = 0
         input_tokens = 0
 
         for raw_line in resp:
@@ -139,17 +147,32 @@ class NativeEngine(BaseEngine):
             choices = chunk.get("choices", [])
             if choices:
                 delta = choices[0].get("delta", {})
-                if delta.get("content") and first_token_time is None:
-                    first_token_time = time.monotonic()
+                content = delta.get("content")
+                if content:
+                    accumulated_content.append(content)
+                    chunk_count += 1
+                    if first_token_time is None:
+                        first_token_time = time.monotonic()
+
+            # usage 字段（如果服务端返回的话）作为权威来源
             usage = chunk.get("usage")
             if usage:
                 input_tokens = usage.get("prompt_tokens", 0)
-                output_tokens = usage.get("completion_tokens", 0)
+                usage_output_tokens = usage.get("completion_tokens", 0)
 
         resp.close()
         t_end = time.monotonic()
         total_latency = t_end - t_start
         ttft = (first_token_time - t_start) if first_token_time else total_latency
+
+        # token 计数：usage > /tokenize > chunk count
+        if usage_output_tokens > 0:
+            output_tokens = usage_output_tokens
+        else:
+            full_text = "".join(accumulated_content)
+            tokenized = NativeEngine._tokenize_count(api_url, full_text)
+            output_tokens = tokenized if tokenized is not None else chunk_count
+
         tpot = (total_latency - ttft) / output_tokens if output_tokens > 1 else 0.0
 
         return RequestMetric(
@@ -182,6 +205,32 @@ class NativeEngine(BaseEngine):
             tpot=total_latency / output_tokens if output_tokens > 1 else 0.0,
             error=None,
         )
+
+    @staticmethod
+    def _tokenize_count(api_url: str, text: str) -> int | None:
+        """调用 llama-server 的 /tokenize 端点精确计算 token 数。
+
+        从 api_url (如 http://host:8080/v1/chat/completions) 推导出
+        base URL (http://host:8080)，然后 POST /tokenize。
+        失败返回 None（调用方回退到 chunk count）。
+        """
+        if not text:
+            return 0
+        try:
+            parsed = urllib.parse.urlparse(api_url)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            data = json.dumps({"content": text}).encode()
+            req = urllib.request.Request(
+                f"{base}/tokenize",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+                tokens = body.get("tokens", [])
+                return len(tokens)
+        except Exception:
+            return None
 
     def _load_prompts(self, dataset: str, num_requests: int) -> list[dict]:
         from ..dataset import load_dataset
