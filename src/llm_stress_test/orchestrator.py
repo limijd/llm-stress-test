@@ -202,17 +202,21 @@ class Orchestrator:
         规则：
         - Auth 错误（401/403）→ 立即中止
         - 网络错误（dns/connect/refused）在本轮中 >= 3 → 中止
-        - 连续 5xx 服务端错误 >= 10 → 中止
+        - 连续 5xx 服务端错误 >= 3 → 中止（保护远程服务器）
+        - 本轮失败率 >= 80% → 中止（服务明显过载）
         """
         network_error_keywords = ("dns", "connect", "refused", "timeout", "connection")
         network_errors = 0
         consecutive_5xx = 0
         max_consecutive_5xx = 0
+        total_failed = 0
 
         for req in result.requests:
             if req.success:
                 consecutive_5xx = 0
                 continue
+
+            total_failed += 1
 
             # 检查 Auth 错误
             if req.error and any(
@@ -247,10 +251,20 @@ class Orchestrator:
                 )
             )
 
-        if max_consecutive_5xx >= 10:
+        if max_consecutive_5xx >= 3:
             raise SystemicAbort(
                 SystemicError(
                     error_type="server_error",
-                    message=f"检测到 {max_consecutive_5xx} 个连续 5xx 错误，服务端不可用",
+                    message=f"检测到 {max_consecutive_5xx} 个连续 5xx 错误，服务端可能过载，主动终止以保护服务器",
+                )
+            )
+
+        # 高失败率保护：本轮请求数 >= 3 且失败率 >= 80% 时中止
+        total = len(result.requests)
+        if total >= 3 and total_failed / total >= 0.8:
+            raise SystemicAbort(
+                SystemicError(
+                    error_type="overload",
+                    message=f"本轮失败率 {total_failed}/{total} = {total_failed/total*100:.0f}%，服务明显过载，主动终止",
                 )
             )

@@ -1,0 +1,41 @@
+# DeepSeek-V3.2-Q4_K_M via llama-server — 保守压测配置
+# 适用于远程单机 A100×8，避免过载崩溃
+#
+# 策略：从极低并发开始，小步递增，每级少量请求试探
+# 如果低并发都稳定通过，再手动调高上限
+
+target:
+  name: "DeepSeek-V3.2-Q4_K_M-llama-server"
+  api_url: "http://TARGET_IP:8080/v1/chat/completions"
+  api_key: "not-needed"
+  model: "DeepSeek-V3.2-Q4_K_M"
+
+engine: "native"
+
+request:
+  stream: true
+  extra_args: {}
+
+test:
+  # 保守起步：并发 1→2→4→8，每级仅 3~10 个请求
+  concurrency: [1, 2, 4, 8]
+  requests_per_level: [3, 5, 8, 10]
+  dataset: "openqa"
+
+pass_criteria:
+  - metric: "success_rate"
+    operator: ">="
+    threshold: 0.95
+  - metric: "avg_ttft"
+    operator: "<="
+    threshold: 30.0  # Q4 量化大模型 TTFT 可能较慢
+
+degradation:
+  enabled: true
+  step: 1          # 降级步长 1，精确找到极限
+  min_concurrency: 1
+
+output:
+  dir: "./results"
+  formats: ["json", "csv", "html"]
+  charts: true

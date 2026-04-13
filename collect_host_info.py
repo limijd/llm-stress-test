@@ -169,11 +169,11 @@ def collect_memory() -> dict:
         info["hugepage_size"] = fmt_bytes(huge_size)
 
     # DIMM 信息（需要 root）
-    dimm = run("sudo dmidecode -t memory 2>/dev/null | grep -E 'Size|Speed|Type|Manufacturer' | head -32")
+    dimm = run("dmidecode -t memory 2>/dev/null | grep -E 'Size|Speed|Type|Manufacturer' | head -32")
     info["dimm_info"] = dimm or "(需要 root 权限执行 dmidecode)"
 
     # 内存带宽（如果有 lshw）
-    mem_bw = run("sudo lshw -class memory -short 2>/dev/null | head -20")
+    mem_bw = run("lshw -class memory -short 2>/dev/null | head -20")
     info["memory_hardware"] = mem_bw or "(需要 root 权限执行 lshw)"
 
     return info
@@ -280,18 +280,20 @@ def collect_storage() -> dict:
     df = run("df -hT | grep -vE '^(tmpfs|devtmpfs|overlay|Filesystem)'")
     info["filesystem_usage"] = df
 
-    # NVMe 设备详情
-    nvme = run("sudo nvme list 2>/dev/null || ls /dev/nvme* 2>/dev/null | head -10")
+    # NVMe 设备详情（优先无 sudo 方式）
+    nvme = run("nvme list 2>/dev/null || ls /dev/nvme* 2>/dev/null | head -10")
     info["nvme_devices"] = nvme
 
     # I/O 调度器
     schedulers = run("cat /sys/block/*/queue/scheduler 2>/dev/null | head -10")
     info["io_schedulers"] = schedulers
 
-    # 查找可能的模型文件
+    # 查找可能的模型文件（仅搜索常见路径，避免全盘 find 对远程机器 I/O 冲击）
+    search_dirs = "/home /opt /data /mnt /srv /tmp /root /models"
     gguf_files = run(
-        "find / -name '*.gguf' -o -name '*.safetensors' -o -name '*.bin' 2>/dev/null "
-        "| head -20 | while read f; do ls -lh \"$f\" 2>/dev/null; done",
+        f"find {search_dirs} -maxdepth 5 "
+        r"\( -name '*.gguf' -o -name '*.safetensors' \) "
+        "2>/dev/null | head -20 | while read f; do ls -lh \"$f\" 2>/dev/null; done",
         timeout=15,
     )
     info["model_files"] = gguf_files or "(未搜索到或无权限)"
@@ -318,7 +320,7 @@ def collect_network() -> dict:
     info["listening_ports"] = run("ss -tlnp 2>/dev/null | grep -E '(8080|8000|8443|3000|5000|11434)'")
 
     # 防火墙状态
-    info["firewall"] = run("sudo ufw status 2>/dev/null || sudo iptables -L -n 2>/dev/null | head -20")
+    info["firewall"] = run("ufw status 2>/dev/null || iptables -L -n 2>/dev/null | head -20")
 
     return info
 
@@ -332,13 +334,13 @@ def collect_pcie() -> dict:
         "for gpu_pci in $(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader 2>/dev/null); do "
         "  bdf=$(echo $gpu_pci | sed 's/00000000://' | tr '[:upper:]' '[:lower:]'); "
         "  echo \"=== $gpu_pci ===\"; "
-        "  sudo lspci -vvs $bdf 2>/dev/null | grep -E '(LnkCap|LnkSta|NUMA|MaxPayload|MaxReadReq)'; "
+        "  lspci -vvs $bdf 2>/dev/null | grep -E '(LnkCap|LnkSta|NUMA|MaxPayload|MaxReadReq)'; "
         "done"
     )
     info["gpu_pcie_links"] = pcie_gpu or "(需要 root 权限)"
 
     # PCIe 拓扑树
-    info["pcie_tree"] = run("sudo lspci -tv 2>/dev/null | head -50") or "(需要 root 权限)"
+    info["pcie_tree"] = run("lspci -tv 2>/dev/null | head -50") or "(需要 root 权限)"
 
     # IOMMU 状态
     info["iommu"] = run("dmesg 2>/dev/null | grep -i iommu | head -5") or run(

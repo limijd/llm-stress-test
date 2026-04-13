@@ -283,12 +283,13 @@ def probe_context_window(base: str, model_id: str) -> dict:
         return info
 
     # 二分法探测 context 上限
-    # 从 1K 开始，上限试到 256K
-    lo, hi = 512, 262144
+    # 保守上限 32K，避免超大 prompt 导致远程服务 OOM 崩溃
+    # 如果需要探测更大 context，可通过 --max-context 参数调整
+    lo, hi = 512, 32768
     last_ok = lo
 
-    # 先快速确定大致范围（指数增长）
-    print("      阶段 1: 指数探测范围 ...", flush=True)
+    # 先快速确定大致范围（指数增长，步幅 ×2）
+    print("      阶段 1: 指数探测范围 (上限 32K) ...", flush=True)
     probe_size = 1024
     while probe_size <= hi:
         prompt = build_prompt_of_length(probe_size)
@@ -312,9 +313,9 @@ def probe_context_window(base: str, model_id: str) -> dict:
             hi = probe_size
             break
     else:
-        # 如果最大都能过，说明 context >= 256K
+        # 如果 32K 都能过
         info["context_approx_tokens"] = f">={hi}"
-        info["note"] = "达到探测上限，实际 context 可能更大"
+        info["note"] = "达到安全探测上限 (32K)，实际 context 可能更大"
         return info
 
     lo = last_ok
